@@ -116,13 +116,16 @@ def fmt_result_message(bet: dict, data: dict) -> str:
 
 # ─── Genera PDF report mensile ────────────────────────────────────────────────
 def generate_monthly_pdf(year: int, month: int, data: dict) -> bytes:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-    from reportlab.graphics.shapes import Drawing, Rect, String
-    from reportlab.graphics import renderPDF
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+        from reportlab.graphics.shapes import Drawing, Rect, String
+        from reportlab.graphics import renderPDF
+    except ImportError as e:
+        raise RuntimeError(f"reportlab non disponibile: {e}")
     import io
 
     buffer = io.BytesIO()
@@ -377,12 +380,33 @@ def send_monthly_report(year: int, month: int):
     try:
         pdf_bytes = generate_monthly_pdf(year, month, data)
     except Exception as e:
-        log.error(f"Errore generazione PDF: {e}")
-        asyncio.run(bot.send_message(
-            chat_id=CHAT_ID,
-            text=f"⚠️ Errore generazione report {month_names[month]} {year}: {e}",
-            parse_mode=ParseMode.MARKDOWN
-        ))
+        import traceback
+        log.error(f"Errore generazione PDF: {e}\n{traceback.format_exc()}")
+        # Invia report testuale come fallback
+        try:
+            month_str_fb = f"{year}-{month:02d}"
+            bets_fb = [b for b in data.get("bets", [])
+                       if b.get("match", {}).get("date", "").startswith(month_str_fb)]
+            won_fb  = sum(1 for b in bets_fb if b.get("result") == "won")
+            lost_fb = sum(1 for b in bets_fb if b.get("result") == "lost")
+            staked_fb = sum(b.get("stake", 0) for b in bets_fb)
+            pwin_fb = sum(b.get("stake",0)*b.get("bookOdds",1) for b in bets_fb if b.get("result")=="won")
+            profit_fb = pwin_fb - staked_fb
+            roi_fb = (profit_fb / staked_fb * 100) if staked_fb > 0 else 0
+            asyncio.run(bot.send_message(
+                chat_id=CHAT_ID,
+                text=(
+                    f"📊 *Report {month_names[month]} {year}* (testo — PDF non disponibile)\n\n"
+                    f"📋 {len(bets_fb)} schedine · {won_fb}✅ {lost_fb}❌\n"
+                    f"💶 Puntato: €{staked_fb:.2f}\n"
+                    f"{'📈' if profit_fb >= 0 else '📉'} P/L: *{'+'if profit_fb>=0 else ''}€{profit_fb:.2f}* (ROI {'+' if roi_fb>=0 else ''}{roi_fb:.1f}%)\n"
+                    f"💰 Cassa: *€{data.get('bankroll', 0):.2f}*\n\n"
+                    f"⚠️ _Errore PDF: {str(e)[:100]}_"
+                ),
+                parse_mode=ParseMode.MARKDOWN
+            ))
+        except Exception as e2:
+            log.error(f"Anche il fallback testuale ha fallito: {e2}")
         return
 
     # Calcola stats per il messaggio
